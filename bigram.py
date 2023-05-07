@@ -5,7 +5,7 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 32 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
-max_iters = 30000
+max_iters = 3000
 eval_interval = 300
 learning_rate = 1e-2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -110,6 +110,7 @@ if __name__ == "__main__":
         Xb, yb = get_batch("train")
         logits, loss = model(Xb, yb)
         optimizer.zero_grad(set_to_none=True)
+        loss.backward()
         optimizer.step()
         
     #generate after training is complete
