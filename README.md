@@ -3,5 +3,5 @@ Simple GPT with multiheaded attention for char level tokens, inspired from Andre
 
 ## ToDO
 
-1. Implement self-attention
-2. Apply multi-headed self-attention
+1. Incorporate add & Norm layer
+2. Incorporate Feed forward layer
