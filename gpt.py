@@ -3,14 +3,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+batch_size = 64 # how many independent sequences will we process in parallel?
+block_size = 256 # what is the maximum context length for predictions?
 max_iters = 5000
-eval_interval = 300
-learning_rate = 1e-3
+eval_interval = 500
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embed = 32
+n_embed = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 # ------------
 
 torch.manual_seed(1337)
@@ -69,6 +72,7 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embed, head_size, bias=False)
 
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -80,6 +84,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5 #(B, T, C) @ (B, C, T) ----> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] ==0, float("-inf"))
         wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = self.dropout(wei)
         out = wei @ v #(B, T, T) @ (B, T, C) -----> (B, T, C)
         return out
 
@@ -88,19 +93,51 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size) -> None:
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embed, n_embed)
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+       out = torch.cat([h(x) for h in self.heads], dim=-1)
+       out = self.proj(out)
+       out = self.dropout(out)
+       return  out
 
+class FeedForward(nn.Module):
+    """simple linear layer followed by a non-linear activation"""
+    def __init__(self, n_embed) -> None:
+        super().__init__()
+        self.net  = nn.Sequential(
+            nn.Linear(n_embed,4*n_embed),
+            nn.ReLU(),
+            nn.Linear(4*n_embed, n_embed),
+            nn.Dropout(dropout),
+        )
+    
+    def forward(self, x):
+        return self.net(x)
 
+class Block(nn.Module):
+    def __init__(self, n_embed,n_heads) -> None:
+        super().__init__()
+        head_size = n_embed//n_heads
+        self.sa = MultiHeadAttention(n_heads, head_size)
+        self.ffwd = FeedForward(n_embed)
+        self.ln1 = nn.LayerNorm(n_embed)
+        self.ln2 = nn.LayerNorm(n_embed)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
+    
 #simple bigram language model
 class BigramLanguageModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.embedding_table = nn.Embedding(vocab_size, n_embed)
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
-        #self.sa_head = Head(n_embed)
-        self.sa_heads = MultiHeadAttention(4, n_embed//4) #4 heads of 8 self attention
+        self.blocks = nn.Sequential(*[Block(n_embed, n_heads=n_head) for _ in range(n_layer)])
+        self.ln_f =   nn.LayerNorm(n_embed)
         self.lmhead = nn.Linear(n_embed, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -108,9 +145,10 @@ class BigramLanguageModel(nn.Module):
         B, T = idx.shape
 
         token_emb = self.embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device))
-        x = token_emb + pos_emb
-        x = self.sa_heads(x)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) #(T, C)
+        x = token_emb + pos_emb #(B, T, C)
+        x = self.blocks(x) #(B, T, C)
+        x = self.ln_f(x) #(B, T, C)
         logits = self.lmhead(x) # (B, T, vocab_size)
 
 
@@ -163,4 +201,4 @@ if __name__ == "__main__":
     print("######################################################################")
     print(f"Generating context characters:")
     context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+    print(decode(m.generate(context, max_new_tokens=800)[0].tolist()))
